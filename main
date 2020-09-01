@@ -1,0 +1,280 @@
+#include <ESP8266WiFi.h>
+#include <PubSubClient.h>
+#include <NTPClient.h>
+#include <WiFiUdp.h>
+#include <Ticker.h>
+
+//#include <ESP8266WiFiMulti.h>   // Include the Wi-Fi-Multi library
+//wifiMulti.addAP("ssid_from_AP_1", "your_password_for_AP_1");   // add Wi-Fi networks you want to connect to
+//wifiMulti.addAP("ssid_from_AP_2", "your_password_for_AP_2");
+//wifiMulti.addAP("ssid_from_AP_3", "your_password_for_AP_3");
+
+const char* ssid = "asus";
+const char* password =  "11223344";
+
+//const char* ssid = "TP-LINK_4D6A";
+//const char* password =  "87180558";
+
+const char* mqttServer = "m15.cloudmqtt.com";   // Zafar login
+const int mqttPort = 12783;
+const char* mqttUser = "meitqiqu";
+const char* mqttPassword = "SrD9KhfIHkIh";
+
+//const char* mqttServer = "m15.cloudmqtt.com"; // Santhosh login
+//const int mqttPort = 17881;
+//const char* mqttUser = "rtvoxwtq";
+//const char* mqttPassword = "qGaMyJsDpbZQ";
+
+int ledPin = LED_BUILTIN;   // GPIO13
+int sensorPin = A0;         // select the input pin for the potentiometer
+short int sensorValue = 0;  // variable to store the value coming from the sensor
+char  time_flag = 0;
+
+WiFiUDP ntpUDP;
+
+// By default 'pool.ntp.org' is used with 60 seconds update interval and
+// no offset
+NTPClient timeClient(ntpUDP);
+
+// You can specify the time server pool and the offset (in seconds, can be
+// changed later with setTimeOffset() ). Additionaly you can specify the
+// update interval (in milliseconds, can be changed using setUpdateInterval() ).
+//NTPClient timeClient(ntpUDP, "0.asia.pool.ntp.org", 3600, 60000);
+
+WiFiClient espClient;
+PubSubClient client(espClient);
+
+Ticker blinker;
+
+// Variables to save date and time
+String formattedDate;
+String dayStamp;
+String timeStamp;
+
+bool ack = 0;
+bool ack_1;
+
+//==========================INTR==============================//
+void ICACHE_RAM_ATTR onTimerISR()
+{
+  time_flag = 1;
+  timer1_write(5000000);
+}
+
+
+//==========================SETUP==============================//
+void setup()
+{
+  Serial.begin(115200);
+
+  pinMode(ledPin, OUTPUT);
+  digitalWrite(ledPin, HIGH);
+
+  //Initialize Ticker every 0.5s
+  timer1_attachInterrupt(onTimerISR);
+  timer1_enable(TIM_DIV16, TIM_EDGE, TIM_SINGLE);
+  timer1_write(5000000);
+
+  // Connect to WiFi network
+  Serial.println();
+  Serial.println();
+  Serial.print("Connecting to ");
+  Serial.println(ssid);
+
+  WiFi.begin(ssid, password);
+
+  byte count = 0;
+  while (WiFi.status() != WL_CONNECTED)
+  {
+    delay(500);
+    Serial.print(".");
+
+    if (count > 6)
+      break;
+
+    count++;
+  }
+
+  if (count > 6)
+  {
+    Serial.println("");
+    Serial.println("SSID Not Found...");
+  }
+  else
+  {
+    Serial.println("");
+    Serial.print("WiFi connected - ");
+    Serial.print(WiFi.localIP());
+  }
+  Serial.println();
+
+  client.setServer(mqttServer, mqttPort);
+  client.setCallback(callback);
+
+  while (!client.connected()) {
+    Serial.println("Connecting to MQTT...");
+
+    if (client.connect("ESP8266Client", mqttUser, mqttPassword )) {
+
+      Serial.print("connected to - ");
+      Serial.print(mqttServer);
+      Serial.print(":");
+      Serial.println(mqttPort);
+    } else {
+
+      Serial.print("failed with state ");
+      Serial.print(client.state());
+      delay(2000);
+    }
+  }
+
+  client.publish("mqtt/esp", "Hello, ESP8266 Device is Power ON");
+  client.subscribe("mqtt/esp");
+
+  timeClient.begin();
+  timeClient.setTimeOffset(19800);  // +5.3 (60x60x5.3)
+
+}
+
+//==========================CALLBACK==============================//
+void callback(char* topic, byte* payload, unsigned int length)
+{
+  char msg[length];
+  byte count;
+  bool state;
+
+  Serial.print("Message arrived in topic: ");
+  Serial.println(topic);
+
+  Serial.print("Message:");
+  for (int i = 0; i < length; i++) {
+    Serial.print((char)payload[i]);
+    msg[i] = (char)payload[i];
+  }
+
+  Serial.println("");
+
+  if (!strncmp(msg, "ON", 2))
+  {
+    Serial.println("LED is ON");
+    digitalWrite(ledPin, LOW);
+  }
+  else if (!strncmp(msg, "OFF", 3))
+  {
+    Serial.println("LED is OFF");
+    digitalWrite(ledPin, HIGH);
+  }
+  else if (!strncmp(msg, "LED_STATUS", 10))
+  {
+    state = digitalRead(ledPin);     // read the input pin
+    Serial.println("state-");
+    Serial.print(state);
+    if (state)
+    {
+      client.publish("mqtt/esp", "Hello, LED IS OFF STATE");
+      Serial.println("Hello, LED IS OFF STATE");
+    }
+    else
+    {
+      client.publish("mqtt/esp", "Hello, LED IS ON STATE");
+      Serial.println("Hello, LED IS ON STATE");
+    }
+  }
+  else if (!strncmp(msg, "READ_ADC", 8))
+  {
+    sensorValue = analogRead(sensorPin);
+
+    client.publish("mqtt/esp", "ADC Value = XX");
+    Serial.println(sensorValue);
+  }
+  else if (!strncmp(msg, "BLINK", 5))
+  {
+    Serial.println("LED is BLINKING");
+
+    for (count = 0; count < 10; count++)
+    {
+      digitalWrite(ledPin, LOW);
+      delay(100);
+      digitalWrite(ledPin, HIGH);
+      delay(100);
+    }
+  }
+  else
+  {
+    Serial.println("NOT found");
+  }
+
+  Serial.println();
+  Serial.println("-----------------------");
+}
+
+//==========================LOOP==============================//
+void loop()
+{
+  ack = client.loop();
+  if (ack != ack_1)
+  {
+    if (ack == 0)
+    {
+      Serial.println("NOT Connected");
+
+      while (!client.connected())
+      {
+        Serial.println("Connecting to MQTT...");
+
+        if (client.connect("ESP8266Client", mqttUser, mqttPassword ))
+        {
+          Serial.println("connected");
+        }
+        else
+        {
+          Serial.println("failed with state ");
+          Serial.print(client.state());
+          delay(2000);
+        }
+      }
+
+      client.publish("mqtt/esp", "Hello, ESP8266 Device is Power ON");
+      client.subscribe("mqtt/esp");
+    }
+    else
+    {
+      Serial.println("Connected");
+    }
+    ack_1 = ack;
+  }
+
+  //time_flag = 1; // for Temp
+  if (1 == time_flag)
+  {
+    time_flag = 0;
+    timeClient.update();
+    /*
+    Serial.print("Time: ");
+    Serial.println(timeClient.getFormattedTime());
+
+    Serial.print("Date: ");
+    Serial.println(timeClient.getFormattedDate());
+    */
+    while (!timeClient.update())
+    {
+      timeClient.forceUpdate();
+    }
+    // The formattedDate comes with the following format:
+    // 2018-05-28T16:00:13Z
+    // We need to extract date and time
+    formattedDate = timeClient.getFormattedDate();
+    //Serial.println(formattedDate);
+
+    // Extract date
+    int splitT = formattedDate.indexOf("T");
+    dayStamp = formattedDate.substring(0, splitT);
+    Serial.print("DATE: ");
+    Serial.println(dayStamp);
+
+    // Extract time
+    timeStamp = formattedDate.substring(splitT + 1, formattedDate.length() - 1);
+    Serial.print("HOUR: ");
+    Serial.println(timeStamp);
+  }
+}
